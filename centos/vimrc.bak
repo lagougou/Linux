@@ -1,0 +1,49 @@
+set syntax=on
+set autoindent
+set tabstop=4
+set softtabstop=4
+set shiftwidth=4
+set history=500
+set autoindent
+
+map <F8> :call RunPython()<CR>
+func! RunPython()
+	exec "W"
+	if &filetype == 'python'
+		exec "!time python2.7 %"
+	endif
+endfunc
+
+"Tagbar
+let g:tagbar_width=35
+let g:tagbar_ctags_bin='/usr/bin/ctags'
+let g:tagbar_right=1
+let g:tagbar_autofocus=0
+
+
+"NERD tree
+set rtp+=~/.vim/bundle/Vundle.vim
+call vundle#begin()
+
+Plugin 'VundleVim/Vundle.vim'
+Plugin 'tpope/vim-fugitive'
+Plugin 'rstacruz/sparkup', {'rtp': 'vim/'}
+Plugin 'preservim/nerdtree'
+Plugin 'Valloric/YouCompleteMe'
+
+call vundle#end()            " required
+filetype plugin indent on    " required
+
+let NERDChristmasTree=0
+let NERDTreeWinSize=35
+let NERDTreeChDirMode=2
+let NERDTreeIgnore=['\~$']
+let NERDTreeShowBookmarks=1
+let NERDTreeWinPos="left"
+
+" Automatically open a NERDTree if no files where specified
+autocmd vimenter * if !argc() | NERDTree | endif
+"  Close vim if the only window left open is a NERDTree
+autocmd bufenter * if (winnr("$") == 1 && exists("b:NERDTree") && b:NERDTree.isTabTree()) | q | endif
+" open a nerdtree
+nmap <F5> :NERDTreeToggle<cr>
