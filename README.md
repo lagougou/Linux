@@ -1,0 +1,1 @@
+"about linux general configuration" 

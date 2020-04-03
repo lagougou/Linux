@@ -1,0 +1,13 @@
+# isntall python3 in centos 7 
+<pre>
+	1. yum -y groupinstall "Development tools"
+	2. yum -y install zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel gdbm-devel db4-devel libpcap-devel xz-devel
+	3. yum install -y libffi-devel zlib1g-dev zlib*
+	4. wget wget https://www.python.org/ftp/python/3.7.2/Python-3.7.2.tar.xz
+	5. tar -xvf Python-3.7.2.tar.xz
+	6. cd Python-3.7.2
+	7. mkdir /usr/local/python3
+	8. ./configure --prefix=/usr/local/python3 --enable-optimizations --with-ssl
+	9. make && make install
+	10 ln -s /usr/local/python3/bin/python3 /usr/local/bin/python3 && ln -s /usr/local/python3/bin/pip3 /usr/local/bin/pip && ln -s /usr/local/python3/bin/pyvenv-3.7 /usr/local/bin/pyvenv
+</pre>
