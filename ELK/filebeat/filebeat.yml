@@ -26,8 +26,19 @@ filebeat.inputs:
   # Paths that should be crawled and fetched. Glob based paths.
   paths:
     - /var/log/nginx/access.log
+  tags: ["access"]
   json.key_under_root: true
   json.overwrite_keys: true
+#nginx error log 
+- type: log
+
+  # Change to true to enable this input configuration.
+  enabled: true
+
+  # Paths that should be crawled and fetched. Glob based paths.
+  paths:
+    - /var/log/nginx/error.log
+  tags: ["error"]
     #- c:\programdata\elasticsearch\logs\*
 
   # Exclude lines. A list of regular expressions to match. It drops the lines that are
@@ -149,8 +160,16 @@ setup.kibana:
 #-------------------------- Elasticsearch output ------------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
+
   hosts: ["192.168.0.105:9200"]
-  index: "nginx-%{[beat.version]}-%{+yyyy.MM}"
+  #split index with tag
+  indices:
+    - index: "nginx-%{[beat.version]}-%{+yyyy.MM}"
+      when.contains:
+        tags: "access"                                     
+    - index: "nginx-error-%{[beat.version]}-%{+yyyy.MM}"
+      when.contains:
+        tags: "error"
   # Enabled ilm (beta) to use index lifecycle management instead daily indices.
   #ilm.enabled: false
 
