@@ -75,6 +75,18 @@ filebeat.inputs:
   # Note: After is the equivalent to previous and before is the equivalent to to next in Logstash
   #multiline.match: after
 
+- type: log
+
+  # Change to true to enable this input configuration.
+  enabled: true
+
+  # Paths that should be crawled and fetched. Glob based paths.
+  paths:
+    - /var/log/java/catalina.out
+  tags: ["java"]
+  multiline.pattern: ^\[
+  multiline.match: after
+  multiline.negate: true
 
 #============================= Filebeat modules ===============================
 
@@ -170,6 +182,9 @@ output.elasticsearch:
     - index: "nginx-error-%{[beat.version]}-%{+yyyy.MM}"
       when.contains:
         tags: "error"
+    - index: "java-%{[beat.version]}-%{+yyyy.MM}"
+      when.contains:
+        tags: "java"
   # Enabled ilm (beta) to use index lifecycle management instead daily indices.
   #ilm.enabled: false
 
