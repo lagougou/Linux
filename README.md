@@ -1,1 +1,1 @@
-"about linux general configuration" 
+#about linux general configuration 
