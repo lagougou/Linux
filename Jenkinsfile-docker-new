@@ -1,0 +1,313 @@
+#!/usr/bin/env groovy
+pipeline {
+    // 为整个流水线分配一个执行器
+    agent {
+        label 'java'
+    }
+
+    options {
+        // 超时终止这次的构建
+        timeout(time: 10, unit: 'MINUTES')
+        // 不允许同时执行流水线, 防止同时访问共享资源等
+        // disableConcurrentBuilds()
+        // 显示具体的构建流程时间戳
+        timestamps()
+    }
+
+    parameters {
+        // 手动选择
+        choice(
+            name: 'PARAM_SERVICE_DEPLOY_FLAG',
+            description: '请选择构建维度,build-check:仅编译, build-dubbo:打dubbo包, deploy-dev:打包和部署到开发环境, build-test:打包到测试环境,  deploy-test:部署到测试环境, build-pre:打包到预发布',
+            choices: ['build-check', 'build-dubbo', 'deploy-dev', 'build-test', 'deploy-test',  'build-pre',  'deploy-version-dev','build-version-pre']
+        )
+        string(name: 'PARAM_IN_PUT', defaultValue: 'all', description: '集群名参数')
+
+    }
+
+    environment {
+
+        /**
+         * 以下是要修改的部分
+         **/
+        // dingding配置
+        // DING_DING = "bfd7cbe7aaa9f82fdea33b51cdaec3c379211eb34a46c9d266528d3814f15d99"
+        // 默认取开发环境的钉钉
+        DING_DING = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_config.py ${JOB_NAME%%/*} dev java dingding_token').trim()
+
+        // host 配置
+        RELEASE_HOST = "javafat.fat.jijiaban.top"
+
+        SHELL_PATH = "${JENKINS_HOME}/jenkins-ci/shell-script"
+
+        BUILD_DIR = "${JENKINS_HOME}/build-workspace"
+
+        // 使用 returnStdout
+        PROFILE = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_branch_profile.sh ${GIT_BRANCH} loc').trim()
+
+        SERVICE_NAME = sh(returnStdout: true, script: 'echo ${JOB_NAME%%/*}').trim()
+
+        DUBBO_PACKAGE_NAME = sh(returnStdout: true, script: 'echo ${JOB_NAME%%/*}-dubbo').trim()
+
+        DUBBO_PACKAGE_FLAG = sh(returnStatus: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/dir_is_modified.sh  ${WORKSPACE} ${JOB_NAME%%/*}-dubbo ${GIT_BRANCH}')
+
+        GIT_COMMIT_MESSAGE = sh(returnStdout: true, script: 'git log --pretty=format:%s ${GIT_COMMIT} -1').trim()
+
+        SERVICE_JAR_NAME = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_build_file_name.sh ${JOB_NAME%%/*}-service jar').trim()
+
+        // todo 可以使用凭据
+        SNAPSHOT_DEPLOY_PARAM="-DaltDeploymentRepository=rdc-snapshots::default::https://repo.rdc.aliyun.com/repository/65774-snapshot-uLP2xj"
+        RELEASE_DEPLOY_PARAM="-DaltDeploymentRepository=rdc-releases::default::https://repo.rdc.aliyun.com/repository/65774-release-AtZSVs"
+
+        VERSION = sh(returnStdout: true, script: 'date +"%Y%m%d%H%M"-${GIT_COMMIT:0:7}').trim()
+    }
+    stages {
+        stage('Build-Check') {
+            steps {
+                echo "---------------------------开始打印所有环境变量---------------------------"
+                echo sh(returnStdout: true, script: 'env')
+                script{
+                    echo '开始校验是否包含master节点'
+                    checkIncludeLastMaster = sh(returnStatus: true, script: '${SHELL_PATH}/git_is_include_lastest_master.sh ${WORKSPACE} ${SERVICE_NAME}')
+                    if(!checkIncludeLastMaster) {
+                        error '提交代码未包含最新master节点'
+                    } else {
+                        echo '校验包含最新master节点通过--开始校验dubbo包命名规范'
+                    }
+                }
+
+                script{
+                    checkDubboResult = sh(returnStatus: true, script: '${SHELL_PATH}/java-business/dubbo_file_name_check.sh ${WORKSPACE} ${SERVICE_NAME}')
+                    if(checkDubboResult) {
+                        error '校验dubbo包命名不通过，请检查'
+                    } else {
+                        echo '校验dubbo包命名规范通过'
+                    }
+                }
+            }
+            post {
+                success{ echo "Build-Check successfully" }
+                failure(message){
+                    sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} 编译失败 校验未通过' }
+            }
+        }
+        stage('Build-Dubbo-Jar') {
+            when {
+                anyOf {
+                    environment name: 'DUBBO_PACKAGE_FLAG',value: "1"
+                    expression { return params.PARAM_SERVICE_DEPLOY_FLAG == "build-dubbo" }
+                }
+                not {
+                    expression { return params.PARAM_SERVICE_DEPLOY_FLAG == "deploy-test" }
+                }
+
+            }
+            tools {
+                maven 'maven_julanling'
+            }
+            steps {
+                sh 'mvn -f ${SERVICE_NAME}-dubbo/pom.xml clean -Dbranch_name=${GIT_BRANCH} -P ${PROFILE} -Dmaven.test.skip=true verify'
+
+                script{
+                    if(env.PROFILE == "pre" || env.PARAM_SERVICE_DEPLOY_FLAG == "pre") {
+                        try {
+                            sh '''
+                                echo "开始构建dubbo-release"
+                                mvn -pl ${DUBBO_PACKAGE_NAME} -am clean -Dbranch_name=${GIT_BRANCH} -P ${PROFILE} -Dmaven.test.skip=true deploy ${RELEASE_DEPLOY_PARAM}
+                                exit_code=$?
+                                if [[ ${exit_code} -eq 0 ]] ; then
+                                    _FILE=${WORKSPACE}/${DUBBO_PACKAGE_NAME}/target/.flattened-pom.xml
+                                    _VERSION=`grep -Po '(?<=<version>).*?(?=</version>)' ${_FILE} |sed -n '2p'`
+                                    echo "获取dubbo版本号:${_VERSION}"
+
+                                    ${SHELL_PATH}/send_ding_ding.sh ${DING_DING} Dubbo最新版本已发布 "> 版本号：${_VERSION}"
+                                fi
+                            '''
+                        } catch (exception) {
+                            unstable(message: "构建dubbo包异常，可能是dubbo版本重复-无法覆盖原由")
+                        }
+                    } else {
+                        sh 'mvn -pl ${DUBBO_PACKAGE_NAME} -am clean -Dbranch_name=${GIT_BRANCH} -P ${PROFILE} -Dmaven.test.skip=true deploy ${SNAPSHOT_DEPLOY_PARAM}'
+                    }
+                }
+            }
+            post{
+                success{
+                    echo "Build-Dubbo-Jar successfully"
+                }
+                failure{
+                    sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} Dubbo打包失败 "> 失败原因: 未知"'
+                }
+            }
+        }
+        stage('Build-Service-Jar') {
+            when{
+                anyOf{
+                    expression { return env.GIT_COMMIT_MESSAGE.indexOf("[dev") > -1}
+                    expression { return env.GIT_COMMIT_MESSAGE.indexOf("[test]") > -1}
+                    expression { return env.PROFILE in ["dev", "test", "pre"]}
+                    expression { return env.PARAM_SERVICE_DEPLOY_FLAG in ["deploy-dev", "build-test", "build-pre", "deploy-test",'deploy-version-dev','build-version-pre']}
+                }
+                // not{
+                // expression { return env.PARAM_SERVICE_DEPLOY_FLAG == "deploy-test"}
+                // }
+            }
+            tools {
+                maven 'maven_julanling'
+            }
+            environment {
+                SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'echo ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+            }
+            steps{
+                sh 'mvn -f ${SERVICE_NAME}-service/pom.xml  clean -Dbranch_name=${GIT_BRANCH} -P ${PROFILE} -Dmaven.test.skip=true verify'
+                sh '${SHELL_PATH}/build_image.py ${SERVICE_NAME} ${SERVICE_JAR_FILE_PATH} java ${VERSION}'
+            }
+            post{
+                success{
+                    echo "Build-Service-Jar successfully"
+                }
+                failure{
+                    sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} Service打包失败 "> 失败原因: 未知"'
+
+                }
+            }
+        }
+        stage('Copy-To-Server'){
+            environment{
+                REMOTE_PATH = "/var/www/java/app"
+                REMOTE_DEPLOY_PATH = "/var/www/deploy_java/app"
+                VERSION_REMOTE_DEPLOY_PATH = "/var/www/deploy_java/ver-app"
+            }
+            parallel{
+                stage('To-Dev') {
+                    when{
+                        anyOf{
+                            expression { return env.GIT_COMMIT_MESSAGE.indexOf("[dev]") > -1}
+                            expression { return params.PARAM_SERVICE_DEPLOY_FLAG in ["deploy-dev"]}
+                        }
+                    }
+                    environment {
+                        DEPLOY_HOST_NAME = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_config.py ${SERVICE_NAME} dev java hostname').trim()
+                        SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'ls ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+                    }
+                    steps{
+                        script {
+                            def DEPLOY_TYPE = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_type.py ${SERVICE_NAME} dev java').trim()
+                            if(DEPLOY_TYPE == 'vm') {
+                                sh '${SHELL_PATH}/copy_jar_to_vm.py ${SERVICE_NAME} ${SERVICE_JAR_FILE_PATH} dev ${PARAM_IN_PUT} java'
+                            }
+                        }
+                    }
+                }
+                stage('To-Test') {
+                    when{
+                        anyOf{
+                            branch 'test'
+                            expression { return params.PARAM_SERVICE_DEPLOY_FLAG in ["build-test", "deploy-test"]}
+                        }
+                        // not{
+                        //     expression { return params.PARAM_SERVICE_DEPLOY_FLAG == "deploy-test"}
+                        // }
+                    }
+                    environment {
+                        DEPLOY_HOST_NAME = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_config.py ${SERVICE_NAME} test java hostname').trim()
+                        SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'ls ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+                    }
+                    steps{
+                        // sonar
+                        withSonarQubeEnv("Fat-Sonar") {
+                            sh 'mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.6.0.1398:sonar -Dsonar.java.binaries=${WORKSPACE}/${SERVICE_NAME}-service/target/classes'
+                        }
+//                         sonar结果
+//                         script{
+//                             timeout(time: 1, unit: 'HOURS') { // Just in case something goes wrong, pipeline will be killed after a timeout
+//                                 def qg = waitForQualityGate() // Reuse taskId previously collected by withSonarQubeEnv
+//                                 if (qg.status != 'OK') {
+//                                     env.BUILD_MSG = "Sonars扫描失败"
+//                                     error "sonar扫描结果失败: ${qg.status}"
+//                                 }
+//                             }
+//                         }
+
+                        script {
+                            def DEPLOY_TYPE = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_type.py ${SERVICE_NAME} test java').trim()
+                            if(DEPLOY_TYPE == 'vm') {
+                                sh '${SHELL_PATH}/copy_jar_to_vm.py ${SERVICE_NAME} ${SERVICE_JAR_FILE_PATH} test ${PARAM_IN_PUT} java'
+                            }
+                        }
+
+                        sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} 申请提测 "> 提测版本: ${SERVICE_JAR_FILE_PATH##*/}  \\n> Sonar扫描结果地址: [[查看sonar地址](http://172.16.101.75:9000/dashboard?id=com.huixian:${SERVICE_NAME})]"'
+//                        sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} 申请提测 "> 提测版本: ${SERVICE_JAR_FILE_PATH##*/}"'
+                    }
+                }
+                stage('To-Pre') {
+                    environment{
+                        SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'ls ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+                    }
+                    when{
+                        anyOf{
+                            expression { return env.PARAM_SERVICE_DEPLOY_FLAG in ["build-pre"]}
+                            branch 'pre'
+                        }
+                    }
+                    steps{
+                        sh '${SHELL_PATH}/copy_file_to_remote.sh ${SERVICE_JAR_FILE_PATH} ${RELEASE_HOST} ${REMOTE_DEPLOY_PATH}/${SERVICE_NAME}/repo'
+                        sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} 申请预发布 "> 预发布版本: ${SERVICE_JAR_FILE_PATH##*/}"'
+                    }
+                }
+            }
+            post{
+                success{
+                    echo "Copy-To-Server successfully"
+                }
+                failure{
+                    sh '${SHELL_PATH}/send_ding_ding.sh ${DING_DING} 拷贝Service包到服务器失败 "> 失败原因: 未知"'
+                }
+            }
+        }
+        stage('Deploy-To-Server') {
+            environment{
+                REMOTE_PATH = "/var/www/java/app"
+            }
+            parallel{
+                stage("To-Dev") {
+                    when {
+                        anyOf {
+                            // git提交包含 [dev] 文案
+                            expression { return env.GIT_COMMIT_MESSAGE.indexOf("[dev") > -1}
+                            expression { return params.PARAM_SERVICE_DEPLOY_FLAG == "deploy-dev" }
+                        }
+                    }
+                    environment{
+                        DEPLOY_HOST_NAME = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_config.py ${SERVICE_NAME} dev java hostname').trim()
+                        SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'ls ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+                    }
+                    steps {
+                        //根据配置将项目部署到 vm 或者 k8s
+                        sh '${SHELL_PATH}/deploy_vm_or_k8s_new.py ${SERVICE_NAME} ${SERVICE_JAR_FILE_PATH} dev ${PARAM_IN_PUT} java ${VERSION}'
+                    }
+                }
+                stage("To-Test") {
+                    when {
+                        anyOf {
+                            expression { return env.GIT_COMMIT_MESSAGE.indexOf("[test") > -1}
+                            expression { return params.PARAM_SERVICE_DEPLOY_FLAG == "deploy-test" }
+                        }
+                        // anyOf{
+                        //     branch 'test'
+                        //     branch 'test-caps'
+                        // }
+                    }
+                    environment{
+                        DEPLOY_HOST_NAME = sh(returnStdout: true, script: '${JENKINS_HOME}/jenkins-ci/shell-script/get_deploy_config.py ${SERVICE_NAME} test java hostname').trim()
+                        SERVICE_JAR_FILE_PATH = sh(returnStdout: true, script: 'ls ${WORKSPACE}/${JOB_NAME%%/*}-service/target/*${GIT_COMMIT:0:7}*.jar').trim()
+                    }
+                    steps {
+                        // 根据配置将项目部署到 vm 或者 k8s
+                        sh '${SHELL_PATH}/deploy_vm_or_k8s_new.py ${SERVICE_NAME} ${SERVICE_JAR_FILE_PATH} test ${PARAM_IN_PUT} java ${VERSION}'
+                    }
+                }
+            }
+        }
+    }
+}
