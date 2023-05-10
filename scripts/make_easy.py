@@ -2,8 +2,8 @@ import hmac, hashlib, datetime
 import requests, json
 
 def create_header():
-    api_key = '9c723852-f2b3-4832-bd38-677da2aa6451'
-    secret_key = 'f1bf32cd-9e38-436b-81f1-710b37ac71c9'
+#     api_key = '9c723852-f2b3-4832-bd38-677da2aa6451'
+#     secret_key = 'f1bf32cd-9e38-436b-81f1-710b37ac71c9'
 
     request_date = datetime.datetime.strftime(datetime.datetime.utcnow(), '%a, %d %b %Y %H:%M:%S GMT')
 
